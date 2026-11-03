@@ -1,0 +1,10 @@
+{
+  "description": "AI-powered customer support teams can generate FAQ-based replies, manage queries and escalate unresolved issues to human agents for faster, more reliable service.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

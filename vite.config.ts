@@ -40,6 +40,14 @@ export default defineConfig(({ mode }) => {
       watch: {
         ignored: ["**/.figma/**"],
       },
+      // Proxy /api requests to the backend so the browser never makes
+      // cross-origin requests and CORS is never an issue.
+      proxy: {
+        "/api": {
+          target: "http://localhost:3001",
+          changeOrigin: true,
+        },
+      },
     },
     preview: {
       host: process.env.FIGMA_DEV_SERVER_HOST || "0.0.0.0",

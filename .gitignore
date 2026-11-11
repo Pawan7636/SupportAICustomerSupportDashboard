@@ -19,3 +19,7 @@ logs/
 # beside it.
 /.plugins/
 /.opencode-skills/
+
+# Backend: SQLite database file
+/server/data/
+/server/dist/

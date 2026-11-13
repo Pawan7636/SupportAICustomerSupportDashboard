@@ -1,0 +1,80 @@
+================================================================
+  SUPPORTAI — PROJECT OVERVIEW
+================================================================
+
+PROJECT NAME
+  SupportAI Customer Support Dashboard
+
+PURPOSE
+  SupportAI is a full-stack AI-powered customer support platform.
+  It enables support teams to generate accurate, context-aware
+  responses to customer queries using Google Gemini AI, grounded
+  in a custom knowledge base through Retrieval-Augmented Generation
+  (RAG). It also provides ticket management, human escalation
+  workflows, query history, and a live knowledge base editor.
+
+TARGET USERS
+  - Support Agents: use the AI assistant to draft replies,
+    manage escalations, and track tickets.
+  - Admins: manage users, oversee all tickets, maintain the
+    knowledge base.
+  - Customers: submit tickets, view their own query history
+    (via API — the dashboard is primarily an agent-facing UI).
+
+CORE FEATURES
+  1. AI Response Assistant
+     - Paste a customer query, select a category and tone.
+     - Gemini AI generates a response grounded in the knowledge base.
+     - Responses stream in real-time using Server-Sent Events (SSE).
+     - RAG source citations shown below each response.
+
+  2. Knowledge Base Management
+     - Full CRUD for knowledge base articles.
+     - Articles are automatically embedded using text-embedding-004
+       (768 dimensions) on creation and update.
+     - Used as the RAG retrieval source for all AI responses.
+
+  3. Ticket Management
+     - Create, view, filter, sort, and assign support tickets.
+     - Status workflow: open → pending → in_progress → resolved → closed.
+     - Priority levels: low, medium, high, urgent.
+     - Full audit trail for every ticket action.
+     - Internal notes visible only to agents and admins.
+
+  4. Human Escalation
+     - Route queries to human agents with reason, assignment, and notes.
+     - Live queue view with Pending, In Progress, and Resolved tabs.
+
+  5. Query History
+     - Searchable, filterable table of all customer queries.
+
+  6. Authentication & Authorisation
+     - JWT-based access + refresh token pair.
+     - Role-based access control: customer, agent, admin.
+     - Bcrypt password hashing, refresh token rotation, audit-safe
+       SHA-256 hashed token storage.
+
+REPOSITORY STRUCTURE
+  SupportAICustomerSupportDashboard/
+  ├── src/                     React frontend source
+  │   ├── App.tsx              All screens and components (single-file SPA)
+  │   ├── index.css            Global styles and Tailwind customisations
+  │   └── main.tsx             React entry point
+  ├── public/                  Static assets (favicon)
+  ├── index.html               Vite HTML shell
+  ├── vite.config.ts           Frontend build + dev proxy config
+  ├── package.json             Frontend dependencies (pnpm)
+  ├── server/                  Backend (separate Node.js project)
+  │   ├── src/
+  │   │   ├── index.ts         Express server entry point
+  │   │   ├── routes/          API route handlers
+  │   │   ├── middleware/      Auth, validation, error handling
+  │   │   ├── db/              SQLite helpers, schema, migrations, seeds
+  │   │   ├── utils/           JWT, logger, embeddings, response helpers
+  │   │   └── types/           Shared TypeScript types
+  │   ├── .env                 Local secrets (gitignored)
+  │   ├── .env.example         Template for .env
+  │   └── package.json         Backend dependencies (npm)
+  ├── RUNNING.md               Local development guide
+  ├── DEPLOYMENT.md            Render + Vercel deployment guide
+  └── project-report/          This report folder

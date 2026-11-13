@@ -410,3 +410,90 @@ td.muted { color: #98a2b3; }
   animation: blink 1s step-end infinite;
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* ── RAG source citations (Assistant screen) ─────────────────────────────── */
+.rag-sources {
+  margin: 0.75rem 0 0.5rem;
+  padding: 0.65rem 0.875rem;
+  background: var(--blue-soft);
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.rag-sources-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--blue);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rag-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.rag-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: #1e40af;
+  background: #dbeafe;
+  border: 1px solid #bfdbfe;
+  border-radius: 20px;
+  padding: 0.2rem 0.6rem 0.2rem 0.35rem;
+  line-height: 1.4;
+}
+
+.rag-source-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: var(--blue);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 0.65rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.rag-source-score {
+  margin-left: 0.2rem;
+  font-size: 0.68rem;
+  color: #3b82f6;
+  font-weight: 600;
+}
+
+/* ── Knowledge base tags ─────────────────────────────────────────────────── */
+.kb-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.kb-tags svg {
+  color: var(--subtle);
+  flex-shrink: 0;
+}
+
+.kb-tags span {
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 0.1rem 0.5rem;
+  line-height: 1.5;
+}

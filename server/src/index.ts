@@ -19,6 +19,7 @@ import { ticketsRouter } from "./routes/tickets";
 import { repliesRouter } from "./routes/replies";
 import { usersRouter } from "./routes/users";
 import { chatRouter } from "./routes/chat";
+import { kbRouter } from "./routes/knowledgeBase";
 import { errorHandler } from "./middleware/errorHandler";
 import { logger } from "./utils/logger";
 
@@ -100,8 +101,9 @@ app.get("/health", (_req, res) => {
 });
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use("/api/auth", authLimiter, authRouter);
-app.use("/api/chat", chatRouter);
+app.use("/api/auth",    authLimiter, authRouter);
+app.use("/api/chat",   chatRouter);
+app.use("/api/kb",     kbRouter);
 app.use("/api/tickets", ticketsRouter);
 app.use("/api/tickets/:ticketId/replies", repliesRouter);
 app.use("/api/users", usersRouter);

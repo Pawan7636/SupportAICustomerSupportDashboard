@@ -1,0 +1,237 @@
+================================================================
+  SUPPORTAI — RAG (RETRIEVAL-AUGMENTED GENERATION) SYSTEM
+================================================================
+
+================================================================
+  WHAT IS RAG?
+================================================================
+
+Retrieval-Augmented Generation (RAG) is a technique that
+grounds AI-generated responses in a custom knowledge base
+rather than relying solely on the model's training data.
+
+Instead of asking Gemini "what are our refund policies?",
+the system:
+  1. Finds relevant articles from YOUR knowledge base.
+  2. Injects those articles into the prompt.
+  3. Instructs Gemini to answer ONLY based on that context.
+
+This prevents hallucination (invented facts), ensures
+responses reflect your actual policies, and allows you to
+update the AI's knowledge without retraining.
+
+================================================================
+  RAG PIPELINE — STEP BY STEP
+================================================================
+
+  USER QUERY
+      │
+      ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 1: EMBED THE USER QUERY                       │
+  │                                                     │
+  │  embedText(userMessage)                             │
+  │  → calls Google text-embedding-004 API              │
+  │  → returns a 768-dimensional float vector           │
+  │     [0.023, -0.187, 0.441, ... (768 values)]        │
+  └───────────────────────┬─────────────────────────────┘
+                          │
+                          ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 2: LOAD KNOWLEDGE BASE ARTICLES               │
+  │                                                     │
+  │  listArticlesWithEmbeddings()                       │
+  │  → SQLite query: SELECT * FROM knowledge_base       │
+  │    WHERE is_active = 1                              │
+  │  → Returns all articles WITH their stored           │
+  │    embedding vectors                                │
+  └───────────────────────┬─────────────────────────────┘
+                          │
+                          ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 3: COSINE SIMILARITY RANKING                  │
+  │                                                     │
+  │  retrieveTopK(queryVector, articles, k=3)           │
+  │                                                     │
+  │  For each article with an embedding:                │
+  │    score = dotProduct(queryVec, articleVec)         │
+  │            ─────────────────────────────            │
+  │            |queryVec| × |articleVec|                │
+  │                                                     │
+  │  Articles with score < 0.5 are filtered out.        │
+  │  Top 3 by score are returned.                       │
+  │                                                     │
+  │  score = 1.0 → identical meaning                    │
+  │  score = 0.5 → moderately related                   │
+  │  score = 0.0 → unrelated                            │
+  └───────────────────────┬─────────────────────────────┘
+                          │
+                          ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 4: BUILD RAG CONTEXT BLOCK                    │
+  │                                                     │
+  │  buildRagContext(topArticles)                       │
+  │  → Formats articles as a numbered text block:       │
+  │                                                     │
+  │  "KNOWLEDGE BASE CONTEXT:                           │
+  │   [1] How to track your order                       │
+  │   Once your order has shipped...                    │
+  │                                                     │
+  │   [2] Estimated delivery times by region            │
+  │   Standard estimated delivery windows..."           │
+  └───────────────────────┬─────────────────────────────┘
+                          │
+                          ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 5: INJECT INTO SYSTEM PROMPT                  │
+  │                                                     │
+  │  buildSystemPrompt(category, tone, ragContext)      │
+  │  → Creates full Gemini system prompt containing:    │
+  │    - Role definition ("you are a support agent")   │
+  │    - Tone instructions (friendly/concise/empathetic)│
+  │    - Category context (orders/payments/etc.)        │
+  │    - RAG context block (the retrieved articles)     │
+  │    - Instructions (don't invent, cite sources, etc.)│
+  └───────────────────────┬─────────────────────────────┘
+                          │
+                          ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 6: CALL GEMINI WITH RETRY                     │
+  │                                                     │
+  │  withRetry(() => model.generateContentStream(msg))  │
+  │  → Calls gemini-3.8-flash with the enriched prompt  │
+  │  → Up to 3 retries on 503/429 with exponential      │
+  │    backoff (800ms → 1.6s → 3.2s, with jitter)       │
+  └───────────────────────┬─────────────────────────────┘
+                          │
+                          ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  STEP 7: STREAM RESPONSE TO CLIENT                  │
+  │                                                     │
+  │  SSE Event 1: { sources, ragEnabled }               │
+  │  SSE Events:  { chunk: "text..." }  × many          │
+  │  SSE Final:   { done: true }                        │
+  └─────────────────────────────────────────────────────┘
+
+================================================================
+  KNOWLEDGE BASE STORAGE
+================================================================
+
+Table: knowledge_base
+  id          TEXT PRIMARY KEY     UUID
+  title       TEXT NOT NULL        Article heading
+  content     TEXT NOT NULL        Full article body (up to 10,000 chars)
+  category    TEXT NOT NULL        orders|payments|refunds|account|technical|general
+  tags        TEXT NOT NULL        JSON array: ["tracking", "shipment", "delivery"]
+  embedding   TEXT                 JSON array: 768 floats (text-embedding-004)
+  is_active   INTEGER              1 = active (used in RAG), 0 = disabled
+  created_at  TEXT                 ISO-8601 UTC timestamp
+  updated_at  TEXT                 ISO-8601 UTC timestamp
+
+Embedding storage:
+  Embeddings are stored as JSON arrays directly in the SQLite TEXT column.
+  Example: "[0.023, -0.187, 0.441, ...]" (768 values, ~6KB per article)
+
+  Retrieval is done in-process (Node.js) with pure JavaScript cosine
+  similarity — no vector database or native extension needed.
+
+================================================================
+  EMBEDDING GENERATION
+================================================================
+
+Model used:    text-embedding-004 (Google)
+Dimensions:    768
+API endpoint:  generativelanguage.googleapis.com (via @google/generative-ai SDK)
+
+When embeddings are generated:
+  1. Article created (POST /api/kb)
+     → Embedding generated AFTER HTTP 201 response (fire-and-forget)
+     → Article immediately available for text search, available for
+        semantic search once embedding finishes (~1-2 seconds)
+
+  2. Article updated (PATCH /api/kb/:id)
+     → If title or content changed, embedding is regenerated asynchronously
+     → Old embedding remains in use until new one is saved
+
+  3. Manual regeneration (POST /api/kb/:id/embed)
+     → Synchronous — waits for embedding before responding
+     → Returns { id, dimensions: 768 }
+
+  4. Seed script (npx tsx src/db/seedKnowledge.ts)
+     → Generates embeddings synchronously for all 20 seed articles
+     → 300ms pause between requests to avoid rate limiting
+
+================================================================
+  GRACEFUL DEGRADATION
+================================================================
+
+If the embedding API fails (network error, quota exceeded):
+  - retrieveContext() catches the error and logs a warning
+  - Returns { articles: [], ragContext: "" }
+  - Gemini is still called WITHOUT RAG context
+  - Response is generated from general training data
+  - ragEnabled: false is returned to the client
+
+This means the AI assistant ALWAYS works, even if:
+  - The knowledge base is empty
+  - Embeddings haven't been generated yet
+  - The embedding API is temporarily unavailable
+
+================================================================
+  KNOWLEDGE BASE SEED DATA
+================================================================
+
+20 articles pre-seeded across all categories:
+
+ORDERS (4 articles)
+  - How to track your order
+  - Estimated delivery times by region
+  - Modifying or cancelling an order
+  - What to do if your order arrives damaged
+
+PAYMENTS (4 articles)
+  - Accepted payment methods
+  - Why was I charged twice?
+  - Updating your billing information
+  - Invoice and receipt requests
+
+REFUNDS (3 articles)
+  - Refund policy overview (30-day money-back guarantee)
+  - How to return a physical item
+  - Tracking your refund status
+
+ACCOUNT (4 articles)
+  - Resetting your password
+  - Updating your account email or personal details
+  - Two-factor authentication (2FA) setup
+  - Closing or deleting your account
+
+TECHNICAL (2 articles)
+  - Supported browsers and devices
+  - Clearing cache to fix display issues
+  - API rate limits and integration troubleshooting
+
+GENERAL (2 articles)
+  - How to contact customer support
+  - SupportAI subscription plans
+
+================================================================
+  RAG PERFORMANCE CHARACTERISTICS
+================================================================
+
+Latency breakdown per request:
+  - DB read (all articles):        ~1-5ms   (SQLite in-process)
+  - Embed user query:              ~300-800ms (Gemini API round trip)
+  - Cosine similarity (20 articles): <1ms   (pure JS)
+  - Gemini chat generation:        ~500-2000ms (first token)
+  Total before first token:        ~800-2800ms
+
+Scaling notes:
+  - Cosine similarity is O(n) over article count.
+  - Acceptable up to ~1,000 articles with current approach.
+  - For 10,000+ articles: use pgvector, Pinecone, or Qdrant.
+
+Similarity threshold:
+  - minScore = 0.5 (articles below this are excluded)
+  - Prevents irrelevant content from polluting the prompt
+  - Tune lower (0.3) for broader recall, higher (0.7) for precision

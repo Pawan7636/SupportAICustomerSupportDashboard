@@ -1,25 +1,53 @@
+# ── Dependencies ─────────────────────────────────────────────────────────────
 node_modules/
+.pnpm-store/
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
 dist/
 build/
+server/dist/
+
+# ── Environment & secrets (NEVER commit these) ───────────────────────────────
+.env
+.env.local
+.env.*.local
+server/.env
+server/.env.local
+# Keep .env.example files — they are safe templates
+
+# ── Database ──────────────────────────────────────────────────────────────────
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
+*-debug.log*
+npm-debug.log*
+pnpm-debug.log*
+
+# ── Cache & temp ──────────────────────────────────────────────────────────────
 .cache/
-.env*
 .vite/
 vite.config.*.timestamp-*
 *.tsbuildinfo
-*-debug.log*
-logs/
-*.log
-.claude-replay.*
 .tmp-*
-/.figma/design-context/
 
-# Platform-managed agentplat state, not project source. In the
-# client-initiated single-repo workspace layout (make's `Path: "."` spec) the
-# repo root IS the workspace root, so these land inside this repo rather than
-# beside it.
+# ── Lock files — keep pnpm-lock.yaml (frontend), ignore npm package-lock at root
+package-lock.json
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+
+# ── Figma Make platform files ─────────────────────────────────────────────────
+/.figma/design-context/
 /.plugins/
 /.opencode-skills/
-
-# Backend: SQLite database file
-/server/data/
-/server/dist/
+.claude-replay.*

@@ -1,0 +1,205 @@
+================================================================
+  SUPPORTAI — SYSTEM ARCHITECTURE
+================================================================
+
+================================================================
+  HIGH-LEVEL ARCHITECTURE
+================================================================
+
+  ┌─────────────────────────────────────────────────────────┐
+  │                    USER'S BROWSER                       │
+  │                                                         │
+  │   React SPA (src/App.tsx)                               │
+  │   - Single screen state machine (no router)             │
+  │   - Fetch API + SSE for streaming                       │
+  │   - Relative API calls: /api/...                        │
+  └────────────────────┬────────────────────────────────────┘
+                       │  HTTP / SSE (same-origin in dev,
+                       │  Vercel rewrite in production)
+  ┌────────────────────▼────────────────────────────────────┐
+  │            VITE DEV PROXY (development only)            │
+  │   /api/* → http://localhost:3001                        │
+  │   (Vercel rewrites serve same purpose in production)    │
+  └────────────────────┬────────────────────────────────────┘
+                       │
+  ┌────────────────────▼────────────────────────────────────┐
+  │             EXPRESS API SERVER (port 3001)              │
+  │                                                         │
+  │  Middleware stack (applied in order):                   │
+  │   1. helmet          — security headers                 │
+  │   2. cors            — origin whitelist                 │
+  │   3. express.json    — body parsing                     │
+  │   4. morgan          — HTTP logging                     │
+  │   5. rateLimit       — 200 req/15min global             │
+  │   6. authLimiter     — 20 req/15min on /api/auth        │
+  │                                                         │
+  │  Routes:                                                │
+  │   GET  /health                 — liveness check         │
+  │   /api/auth/*    → authRouter                          │
+  │   /api/chat/*    → chatRouter  (RAG + Gemini)          │
+  │   /api/kb/*      → kbRouter    (knowledge base CRUD)   │
+  │   /api/tickets/* → ticketsRouter                       │
+  │   /api/tickets/:id/replies/* → repliesRouter           │
+  │   /api/users/*   → usersRouter                         │
+  │                                                         │
+  │  Error handler (last middleware)                        │
+  └──────────┬──────────────────────────┬──────────────────┘
+             │                          │
+  ┌──────────▼──────────┐   ┌──────────▼──────────────────┐
+  │  SQLite Database    │   │  Google Generative AI API   │
+  │  (node:sqlite)      │   │                             │
+  │                     │   │  text-embedding-004         │
+  │  Tables:            │   │  → 768-dim embeddings       │
+  │  - users            │   │                             │
+  │  - refresh_tokens   │   │  gemini-3.8-flash           │
+  │  - tickets          │   │  → chat completion          │
+  │  - replies          │   │  → streaming SSE            │
+  │  - audit_log        │   │                             │
+  │  - knowledge_base   │   │  Retry: exponential backoff │
+  │                     │   │  up to 3 retries on 503/429 │
+  └─────────────────────┘   └─────────────────────────────┘
+
+================================================================
+  REQUEST LIFECYCLE — AI ASSISTANT (RAG CHAT)
+================================================================
+
+  1. User types a query in the AI Assistant screen.
+  2. Browser sends:
+       POST /api/chat/stream
+       { message, category, tone }
+
+  3. Express validates the body with Zod schema.
+
+  4. Backend RAG pipeline:
+     a. listArticlesWithEmbeddings()
+        → Loads all active knowledge_base rows (with embeddings) from SQLite.
+     b. retrieveContext(message, articles, k=3)
+        → Calls text-embedding-004 to embed the user's message (768-dim vector).
+        → Runs cosine similarity against every article embedding.
+        → Returns top-3 articles above a 0.5 similarity threshold.
+     c. buildRagContext(topArticles)
+        → Formats retrieved articles into a text block.
+     d. buildSystemPrompt(category, tone, ragContext)
+        → Injects the RAG context block into the Gemini system prompt.
+
+  5. Gemini call (with retry):
+     → model.generateContentStream(message)
+     → Up to 3 retries with exponential backoff on 503/429 errors.
+
+  6. SSE streaming response:
+     Event 1: { sources: [...], ragEnabled: true }   ← citations sent first
+     Event 2+: { chunk: "..." }                       ← text chunks stream in
+     Final:    { done: true }
+
+  7. Browser renders chunks in real-time as they arrive.
+     RAG source chips are displayed below the response.
+
+================================================================
+  REQUEST LIFECYCLE — AUTHENTICATION
+================================================================
+
+  1. POST /api/auth/login  { email, password }
+     → Bcrypt compare (always runs even if user not found — anti-timing)
+     → Issues access token (15m) + refresh token (7d)
+     → Stores SHA-256 hash of refresh token in DB
+
+  2. Protected requests:
+     → Authorization: Bearer <access_token>
+     → authenticate middleware verifies JWT signature + expiry
+     → Attaches req.user = { id, email, role }
+
+  3. Token refresh:
+     POST /api/auth/refresh  { refresh_token }
+     → Verifies JWT signature
+     → Checks DB: not revoked, not expired
+     → Revokes old token, issues new pair (rotation)
+
+  4. Logout:
+     POST /api/auth/logout  { refresh_token }
+     → Marks token_hash as revoked = 1 in DB
+
+================================================================
+  DATABASE ARCHITECTURE
+================================================================
+
+  Entity relationships:
+
+  users ──< tickets (customer_id)         one user → many tickets (as customer)
+  users ──< tickets (assigned_agent_id)   one agent → many assigned tickets
+  tickets ──< replies                     one ticket → many replies
+  tickets ──< audit_log                   one ticket → many audit events
+  users ──< refresh_tokens                one user → many tokens
+  knowledge_base                          standalone — no FK relations
+
+  Auto-migration:
+  - runSchema() is called on every server startup.
+  - Uses CREATE TABLE IF NOT EXISTS — fully idempotent.
+  - SQLite WAL mode enables concurrent reads without blocking writes.
+
+================================================================
+  FRONTEND ARCHITECTURE
+================================================================
+
+  Single-file SPA — src/App.tsx (~1000 lines)
+
+  State machine (no router):
+  type Screen = "dashboard" | "assistant" | "human" | "faqs" |
+                "history"   | "escalations"
+
+  Component tree:
+  App
+  ├── Login                      Sign-in form
+  └── Shell
+      ├── Sidebar                Navigation, user menu
+      ├── Topbar                 Breadcrumbs, search bar
+      └── <Screen>
+          ├── Dashboard          Stats, chart, recent queries
+          ├── Assistant          RAG chat composer + streaming response
+          ├── HumanEscalation    Escalation form
+          ├── FaqManagement      Knowledge base CRUD (backend-wired)
+          ├── QueryHistory       Filterable query table
+          └── Escalations        Live queue tabs
+
+  Primitive components (all custom, no external library):
+  Button, Badge, Input, SelectField, Card, PageHeader, Avatar, Modal
+
+  Key patterns:
+  - API calls use relative URLs (/api/...) — no hardcoded host
+  - SSE streaming handled with ReadableStream.getReader()
+  - Loading / error / empty states for every async operation
+  - Fire-and-forget embedding generation (doesn't block UI)
+
+================================================================
+  SECURITY ARCHITECTURE
+================================================================
+
+  TRANSPORT
+  - HTTPS enforced in production (Render/Vercel)
+  - helmet sets HSTS, X-Content-Type-Options, X-Frame-Options
+
+  AUTHENTICATION
+  - HS256 JWT with separate access and refresh secrets
+  - Access tokens: 15-minute expiry
+  - Refresh tokens: 7-day expiry, rotation on use
+  - Refresh tokens stored as SHA-256 hash — raw value never in DB
+
+  AUTHORISATION
+  - Role checks on every protected endpoint
+  - Customers always get 404 (not 403) on other users' tickets
+    to prevent enumeration
+
+  INPUT VALIDATION
+  - Zod schemas on all request bodies, params, and query strings
+  - 1 MB request body limit
+
+  RATE LIMITING
+  - 200 requests / 15 min globally
+  - 20 requests / 15 min on auth endpoints (brute-force protection)
+
+  PASSWORDS
+  - bcrypt with cost factor 10–12
+  - Constant-time comparison (dummy hash for missing users)
+
+  CORS
+  - Explicit origin allowlist via CORS_ORIGINS env var
+  - localhost always allowed in development

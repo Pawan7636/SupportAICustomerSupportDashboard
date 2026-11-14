@@ -1,0 +1,226 @@
+================================================================
+  SUPPORTAI — DEPLOYMENT GUIDE
+================================================================
+
+================================================================
+  DEPLOYMENT OVERVIEW
+================================================================
+
+  Part             Platform   Notes
+  ───────────────────────────────────────────────────────────
+  Backend API      Render     Web Service — needs persistent disk for SQLite
+  Frontend SPA     Vercel     Static CDN deployment
+  Database         Render     SQLite file on Render persistent disk (/data/)
+  AI              Google      Gemini API — external, managed by Google
+
+Traffic flow in production:
+  Browser → Vercel CDN (React SPA)
+         → Vercel Rewrite (/api/*) → Render Web Service (Express)
+                                   → SQLite (persistent disk)
+                                   → Google Gemini API
+
+================================================================
+  PART 1: BACKEND ON RENDER
+================================================================
+
+PREREQUISITES
+  - GitHub account
+  - Code pushed to a GitHub repository
+  - Render account (render.com) — free tier works for testing,
+    Starter ($7/mo) needed for persistent disk
+
+STEP 1 — PUSH TO GITHUB
+  git add .
+  git commit -m "deploy"
+  git push origin main
+
+STEP 2 — CREATE WEB SERVICE ON RENDER
+  1. render.com → New → Web Service
+  2. Connect your GitHub repo
+  3. Settings:
+     Name:            supportai-backend
+     Root Directory:  server
+     Runtime:         Node
+     Build Command:   npm install && npm run build
+     Start Command:   npm start
+     Instance Type:   Starter (for persistent disk support)
+
+STEP 3 — ADD PERSISTENT DISK
+  Service settings → Disks → Add Disk
+  Name:         supportai-data
+  Mount Path:   /data
+  Size:         1 GB
+
+STEP 4 — SET ENVIRONMENT VARIABLES
+  Service settings → Environment → Add variables:
+
+  NODE_ENV               = production
+  PORT                   = 3001
+  DB_PATH                = /data/support.db
+  JWT_ACCESS_SECRET      = <generate: node -e "require('crypto').randomBytes(64).toString('hex')">
+  JWT_REFRESH_SECRET     = <generate a different one>
+  JWT_ACCESS_EXPIRES_IN  = 15m
+  JWT_REFRESH_EXPIRES_IN = 7d
+  GEMINI_API_KEY         = <your key from aistudio.google.com>
+  GEMINI_MODEL           = gemini-3.8-flash
+  BCRYPT_ROUNDS          = 12
+  CORS_ORIGINS           = (set after Vercel deploy in Part 2)
+
+STEP 5 — DEPLOY
+  Click "Deploy". Render will:
+  1. npm install
+  2. npm run build  (TypeScript → dist/)
+  3. npm start      (node dist/index.js)
+  4. Schema auto-applied on first boot
+
+  Test: curl https://supportai-backend.onrender.com/health
+  Expected: {"success":true,"data":{"status":"ok",...}}
+
+STEP 6 — SEED KNOWLEDGE BASE (optional)
+  In Render Shell tab, or from local machine:
+    npx tsx src/db/seedKnowledge.ts
+  This creates 20 articles and generates embeddings.
+
+================================================================
+  PART 2: FRONTEND ON VERCEL
+================================================================
+
+PREREQUISITES
+  - Vercel account (vercel.com)
+  - Render backend URL from Part 1
+
+STEP 1 — ADD vercel.json TO PROJECT ROOT
+  Create this file at the root of the project (NOT inside server/):
+
+  {
+    "rewrites": [
+      {
+        "source": "/api/:path*",
+        "destination": "https://supportai-backend.onrender.com/api/:path*"
+      }
+    ]
+  }
+
+  Replace the destination URL with your actual Render service URL.
+  This tells Vercel to forward /api/* requests to the backend
+  server-side, avoiding any CORS issues.
+
+STEP 2 — CREATE VERCEL PROJECT
+  1. vercel.com → Add New → Project
+  2. Import your GitHub repo
+  3. Settings:
+     Framework Preset:  Vite
+     Root Directory:    . (project root — NOT server/)
+     Build Command:     pnpm run build
+     Output Directory:  dist
+     Install Command:   pnpm install
+
+STEP 3 — SET ENVIRONMENT VARIABLE
+  Settings → Environment Variables:
+  NODE_ENV = production
+
+STEP 4 — DEPLOY
+  Click Deploy.
+  Your frontend URL: https://your-app.vercel.app
+
+STEP 5 — UPDATE CORS ON RENDER
+  Back on Render → Environment:
+  CORS_ORIGINS = https://your-app.vercel.app
+  Save → Render will auto-redeploy.
+
+================================================================
+  VERIFICATION CHECKLIST
+================================================================
+
+  [ ] curl https://supportai-backend.onrender.com/health returns 200
+  [ ] Browser opens https://your-app.vercel.app — login screen loads
+  [ ] Login with seeded account (admin@supportai.dev / Password1!)
+  [ ] Dashboard loads without console errors
+  [ ] AI Assistant generates a response (may take longer on first request
+      if Render free tier has cold-started)
+  [ ] Knowledge Base screen loads articles
+  [ ] No CORS errors in browser DevTools Network tab
+
+================================================================
+  UNDERSTANDING THE PROXY (IMPORTANT)
+================================================================
+
+In development:
+  Browser (localhost:8443) → Vite proxy (/api/*) → Backend (localhost:3001)
+  The Vite proxy handles CORS transparently.
+
+In production:
+  Browser → Vercel CDN → Vercel rewrite (/api/*) → Render backend
+  The vercel.json rewrite does the same job as the Vite proxy.
+
+In both cases, API_BASE = "" in App.tsx so all fetch calls use
+relative paths like /api/chat/stream. No hardcoded URLs in React code.
+
+================================================================
+  CUSTOM DOMAIN (OPTIONAL)
+================================================================
+
+Vercel frontend custom domain:
+  1. Settings → Domains → Add
+  2. Update your DNS with the CNAME Vercel provides
+  3. Update CORS_ORIGINS on Render to include the new domain
+
+Render backend custom domain:
+  1. Settings → Custom Domains → Add
+  2. Update DNS
+  3. Update vercel.json destination URL to your custom domain
+  4. Update CORS_ORIGINS if needed
+
+================================================================
+  RE-DEPLOYMENTS
+================================================================
+
+Frontend code change:
+  → git push → Vercel auto-deploys
+
+Backend code change:
+  → git push → Render auto-deploys
+
+Environment variable change:
+  → Update in Render/Vercel dashboard → triggers redeploy
+
+Knowledge base articles:
+  → Use the Knowledge Base screen in the app (agent/admin role)
+  → No redeployment needed
+
+Database schema change:
+  → Edit server/src/db/schema.sql
+  → Push → Render redeploys → schema auto-applied on startup
+
+================================================================
+  TROUBLESHOOTING
+================================================================
+
+"Error: Cannot find module 'dist/index.js'" on Render
+  → Check build command is: npm install && npm run build
+  → Check start command is: npm start
+  → Verify server/tsconfig.json outDir is "dist"
+
+API calls return 404 on Vercel
+  → Confirm vercel.json is in the PROJECT ROOT (not server/)
+  → Verify the destination URL matches your Render service URL exactly
+  → Redeploy Vercel after adding vercel.json
+
+Database resets on every Render deploy
+  → You MUST add a Persistent Disk mounted at /data
+  → Confirm DB_PATH=/data/support.db in Render env vars
+
+CORS errors in browser console
+  → Update CORS_ORIGINS on Render to exactly match your Vercel URL
+  → No trailing slash: https://your-app.vercel.app (correct)
+                       https://your-app.vercel.app/  (wrong)
+
+Gemini 503 errors
+  → Backend has automatic retry (3 retries with exponential backoff)
+  → If persists, check GEMINI_API_KEY is set correctly on Render
+  → Try a different GEMINI_MODEL value
+
+Render free tier cold starts
+  → Free tier spins down after 15 min of inactivity
+  → First request after sleep takes ~30 seconds
+  → Upgrade to Starter ($7/mo) or ping /health every 10 min to keep warm

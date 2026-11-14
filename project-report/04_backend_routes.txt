@@ -1,0 +1,258 @@
+================================================================
+  SUPPORTAI — BACKEND ROUTES REFERENCE
+================================================================
+
+Base URL (development): http://localhost:3001
+Base URL (production):  https://your-backend.onrender.com
+
+Authentication: Bearer <access_token> in Authorization header
+Access token lifetime: 15 minutes
+Refresh token lifetime: 7 days (rotation on every use)
+
+Role levels (ascending):
+  customer < agent < admin
+
+================================================================
+  HEALTH
+================================================================
+
+GET /health
+  Auth:    None
+  Returns: { "success": true, "data": { "status": "ok", "ts": "..." } }
+  Purpose: Liveness check for load balancers and uptime monitors.
+
+================================================================
+  AUTHENTICATION  — /api/auth
+  Rate limit: 20 requests per 15 minutes
+================================================================
+
+POST /api/auth/register
+  Auth:    None
+  Body:    { email, password, full_name }
+  Returns: { user, access_token, refresh_token }
+  Notes:   Always creates a 'customer' role account.
+           Password: ≥8 chars, uppercase, lowercase, digit, special char.
+
+POST /api/auth/login
+  Auth:    None
+  Body:    { email, password }
+  Returns: { user, access_token, refresh_token }
+  Notes:   Constant-time bcrypt comparison (anti-timing attack).
+           Returns 401 for wrong credentials OR inactive account.
+
+POST /api/auth/refresh
+  Auth:    None
+  Body:    { refresh_token }
+  Returns: { access_token, refresh_token }
+  Notes:   Rotates the token — old token is revoked immediately.
+           Replaying an old refresh token returns 401.
+
+POST /api/auth/logout
+  Auth:    None
+  Body:    { refresh_token }
+  Returns: { message: "Logged out successfully" }
+  Notes:   Marks the refresh token hash as revoked in the database.
+
+GET /api/auth/me
+  Auth:    Any authenticated user
+  Returns: User object (no password_hash)
+
+================================================================
+  USERS  — /api/users
+================================================================
+
+GET /api/users
+  Auth:    Admin only
+  Query:   role, page, pageSize, sort (created_at|full_name|email), order
+  Returns: Paginated list of all users
+
+POST /api/users
+  Auth:    Admin only
+  Body:    { email, password, full_name, role: "agent"|"admin" }
+  Returns: New user object (201 Created)
+  Notes:   For staff provisioning — use /register for customers.
+
+GET /api/users/:id
+  Auth:    Any authenticated user
+  Notes:   Customers can only view their own profile (403 for others).
+           Agents/admins can view any user.
+
+PATCH /api/users/:id
+  Auth:    Any authenticated user
+  Body:    { full_name?, password?, is_active?, role? }
+  Notes:   Only admins can change is_active or role.
+           Users can update their own name and password.
+
+DELETE /api/users/:id
+  Auth:    Admin only
+  Returns: 204 No Content
+  Notes:   Soft-deactivates (is_active = false). Account cannot log in.
+
+================================================================
+  TICKETS  — /api/tickets
+================================================================
+
+GET /api/tickets
+  Auth:    Any authenticated user
+  Query:   status, priority, category, customer_id, assigned_agent_id,
+           q (full-text search), page, pageSize, sort, order
+  Notes:   Customers see only their own tickets.
+           Agents/admins see all tickets with full filter support.
+
+POST /api/tickets
+  Auth:    Any authenticated user
+  Body:    { subject, description, priority?, category? }
+  Returns: New ticket (201 Created)
+  Notes:   customer_id is set to the authenticated user's id automatically.
+
+GET /api/tickets/:id
+  Auth:    Any authenticated user
+  Returns: Single ticket with joined customer and agent names.
+  Notes:   Customers requesting another user's ticket receive 404 (not 403).
+
+PATCH /api/tickets/:id
+  Auth:    Any authenticated user
+  Body:    { subject?, description?, priority?, category? }
+  Notes:   Customers cannot change priority.
+           Only the ticket owner or agent/admin can edit.
+
+PATCH /api/tickets/:id/status
+  Auth:    Agent or Admin
+  Body:    { status: "open"|"pending"|"in_progress"|"resolved"|"closed" }
+  Notes:   Sets closed_at when status is "closed".
+           Records an audit entry for the change.
+
+PATCH /api/tickets/:id/assign
+  Auth:    Agent or Admin
+  Body:    { agent_id: "uuid" | null }
+  Notes:   agent_id must belong to a user with role agent or admin.
+           Pass null to unassign. Records an audit entry.
+
+DELETE /api/tickets/:id
+  Auth:    Admin only
+  Returns: 204 No Content
+  Notes:   Permanently deletes ticket + all replies (cascade).
+
+GET /api/tickets/:id/audit
+  Auth:    Agent or Admin
+  Returns: Ordered array of audit log entries with actor name/email.
+
+================================================================
+  REPLIES  — /api/tickets/:ticketId/replies
+================================================================
+
+GET /api/tickets/:ticketId/replies
+  Auth:    Any authenticated user
+  Returns: All replies on the ticket.
+  Notes:   Customers never see is_internal_note = true replies.
+
+POST /api/tickets/:ticketId/replies
+  Auth:    Any authenticated user
+  Body:    { body, is_internal_note?: boolean }
+  Returns: New reply with author details (201 Created)
+  Notes:   Customers: is_internal_note must be false (403 otherwise).
+           Customers cannot reply to closed tickets.
+           Customer reply on a resolved ticket auto-reopens it to 'open'.
+
+PATCH /api/tickets/:ticketId/replies/:id
+  Auth:    Any authenticated user
+  Body:    { body }
+  Notes:   Only the original author or admin may edit.
+           Customers cannot see internal notes (returns 404).
+
+DELETE /api/tickets/:ticketId/replies/:id
+  Auth:    Admin only
+  Returns: 204 No Content
+
+================================================================
+  KNOWLEDGE BASE  — /api/kb
+================================================================
+
+GET /api/kb
+  Auth:    None (public)
+  Query:   category (orders|payments|refunds|account|technical|general)
+  Returns: All active articles (embeddings excluded from response).
+
+GET /api/kb/:id
+  Auth:    None (public)
+  Returns: Single article (embedding excluded).
+
+POST /api/kb
+  Auth:    Agent or Admin
+  Body:    { title, content, category, tags?: string[] }
+  Returns: New article (201 Created)
+  Notes:   Embedding is generated asynchronously after the HTTP response.
+           The article is immediately usable for text filtering.
+
+PATCH /api/kb/:id
+  Auth:    Agent or Admin
+  Body:    { title?, content?, category?, tags?, is_active? }
+  Notes:   If title or content changes, embedding is re-generated
+           asynchronously. Use is_active: false to soft-disable an article
+           without deleting it.
+
+DELETE /api/kb/:id
+  Auth:    Admin only
+  Returns: { id } of deleted article
+
+POST /api/kb/:id/embed
+  Auth:    Agent or Admin
+  Returns: { id, dimensions: 768 }
+  Notes:   Manually triggers embedding regeneration for an article.
+           Useful after the initial seed or if embedding is missing.
+
+POST /api/kb/search
+  Auth:    None (public)
+  Body:    { query: string, k?: number (1-10, default 3) }
+  Returns: Top-k semantically similar articles with relevanceScore (0–1).
+  Notes:   Embeds the query in real-time and runs cosine similarity.
+
+================================================================
+  CHAT (RAG + GEMINI)  — /api/chat
+================================================================
+
+POST /api/chat
+  Auth:    None (public)
+  Body:    { message, category?, tone? }
+  Returns: { response, model, sources, ragEnabled }
+  Notes:   Full (non-streaming) response. Runs the complete RAG pipeline.
+           sources: array of { id, title, category, score } articles used.
+           ragEnabled: true if at least one article was retrieved.
+
+POST /api/chat/stream
+  Auth:    None (public)
+  Body:    { message, category?, tone? }
+  Returns: text/event-stream (Server-Sent Events)
+
+  SSE event sequence:
+    Event 1:  data: { "sources": [...], "ragEnabled": true|false }
+    Event 2+: data: { "chunk": "partial text..." }
+    Final:    data: { "done": true }
+    On error: data: { "error": "AI service error. Please try again." }
+
+  Notes:   Both endpoints retry up to 3 times with exponential backoff
+           on 503 (overloaded) and 429 (rate limited) errors from Gemini.
+
+================================================================
+  RESPONSE ENVELOPE
+================================================================
+
+Success:
+  { "success": true, "data": <payload> }
+  { "success": true, "data": <payload>, "meta": { page, pageSize, total, totalPages } }
+
+Error:
+  { "success": false, "error": "Human readable message" }
+  { "success": false, "error": "Validation error", "details": [{ field, message }] }
+
+HTTP Status Codes:
+  200  OK
+  201  Created
+  204  No Content (delete operations)
+  400  Bad Request / Validation Error
+  401  Unauthenticated
+  403  Forbidden (wrong role)
+  404  Not Found
+  409  Conflict (e.g. duplicate email)
+  429  Rate limit exceeded
+  500  Internal Server Error

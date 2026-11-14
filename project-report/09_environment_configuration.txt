@@ -1,0 +1,193 @@
+================================================================
+  SUPPORTAI — ENVIRONMENT CONFIGURATION
+================================================================
+
+================================================================
+  CONFIGURATION FILES
+================================================================
+
+server/.env         Local secrets and config (GITIGNORED — never commit)
+server/.env.example Template for .env — safe to commit, no real values
+
+The backend loads .env automatically via "import dotenv/config"
+at the top of server/src/index.ts.
+
+================================================================
+  ALL ENVIRONMENT VARIABLES
+================================================================
+
+── SERVER ────────────────────────────────────────────────────
+
+PORT
+  Default:  3001
+  Purpose:  Port the Express server listens on.
+  Example:  PORT=3001
+
+NODE_ENV
+  Default:  development
+  Values:   development | production
+  Purpose:  Controls logging format, CORS localhost bypass,
+            and other environment-specific behaviour.
+  Example:  NODE_ENV=production
+
+── CORS ──────────────────────────────────────────────────────
+
+CORS_ORIGINS
+  Default:  (empty — only localhost allowed in development)
+  Purpose:  Comma-separated list of allowed frontend origins.
+            In development: any localhost origin is allowed regardless.
+            In production: ONLY origins listed here are allowed.
+  Example:  CORS_ORIGINS=https://your-app.vercel.app,https://customdomain.com
+
+── DATABASE ──────────────────────────────────────────────────
+
+DB_PATH
+  Default:  ./data/support.db
+  Purpose:  Path to the SQLite database file.
+            Relative to the server/ directory (or CWD).
+            In production on Render, use the persistent disk mount path.
+  Dev:      DB_PATH=./data/support.db
+  Prod:     DB_PATH=/data/support.db
+
+── JWT AUTHENTICATION ────────────────────────────────────────
+
+JWT_ACCESS_SECRET   (REQUIRED)
+  Minimum length: 32 characters
+  Purpose:  HMAC-SHA256 signing key for access tokens.
+            Must be different from JWT_REFRESH_SECRET.
+  Generate: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+  Example:  JWT_ACCESS_SECRET=4d30804d26e96e...
+
+JWT_REFRESH_SECRET  (REQUIRED)
+  Minimum length: 32 characters
+  Purpose:  HMAC-SHA256 signing key for refresh tokens.
+            Separate from access secret so refresh tokens can't
+            be used as access tokens and vice versa.
+  Generate: Run the same command as above, get a DIFFERENT output.
+  Example:  JWT_REFRESH_SECRET=7e43e133...
+
+JWT_ACCESS_EXPIRES_IN
+  Default:  15m
+  Purpose:  Lifetime of access tokens.
+  Format:   jose duration string: "15m", "1h", "30s"
+  Example:  JWT_ACCESS_EXPIRES_IN=15m
+
+JWT_REFRESH_EXPIRES_IN
+  Default:  7d
+  Purpose:  Lifetime of refresh tokens.
+  Format:   jose duration string: "7d", "30d"
+  Example:  JWT_REFRESH_EXPIRES_IN=7d
+
+── GOOGLE GEMINI AI ──────────────────────────────────────────
+
+GEMINI_API_KEY      (REQUIRED)
+  Purpose:  API key for the Google Generative AI service.
+            Used for BOTH chat generation and text embeddings.
+  Get key:  https://aistudio.google.com/app/apikey
+  Example:  GEMINI_API_KEY=AQ.Ab8RN6...
+
+GEMINI_MODEL
+  Default:  gemini-3.8-flash
+  Purpose:  Generative model used for chat responses.
+            Does NOT affect the embedding model (always text-embedding-004).
+  Example:  GEMINI_MODEL=gemini-3.8-flash
+
+  Available models (as of Nov 2026):
+    gemini-3.8-flash     — recommended (fast, capable, available to all)
+    gemini-1.5-flash     — older but very stable fallback
+
+── BCRYPT ────────────────────────────────────────────────────
+
+BCRYPT_ROUNDS
+  Default:  12
+  Purpose:  bcrypt cost factor for password hashing.
+            Higher = slower hash but more brute-force resistant.
+            10 is acceptable for development (faster).
+            12 is recommended for production.
+  Example:  BCRYPT_ROUNDS=10
+
+================================================================
+  COMPLETE .env FOR DEVELOPMENT
+================================================================
+
+PORT=3001
+NODE_ENV=development
+CORS_ORIGINS=http://localhost:8443,http://localhost:5173
+DB_PATH=./data/support.db
+JWT_ACCESS_SECRET=<64-char hex string>
+JWT_REFRESH_SECRET=<different 64-char hex string>
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
+GEMINI_API_KEY=<your key from aistudio.google.com>
+GEMINI_MODEL=gemini-3.8-flash
+BCRYPT_ROUNDS=10
+
+================================================================
+  COMPLETE .env FOR PRODUCTION (Render)
+================================================================
+
+PORT=3001
+NODE_ENV=production
+CORS_ORIGINS=https://your-app.vercel.app
+DB_PATH=/data/support.db
+JWT_ACCESS_SECRET=<64-char hex string — DIFFERENT from dev>
+JWT_REFRESH_SECRET=<different 64-char hex string — DIFFERENT from dev>
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
+GEMINI_API_KEY=<your production key>
+GEMINI_MODEL=gemini-3.8-flash
+BCRYPT_ROUNDS=12
+
+================================================================
+  GENERATING SECRETS
+================================================================
+
+Run this command twice (once per secret) in any terminal:
+
+  node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+
+Each run produces a unique 128-character hex string like:
+  4d30804d26e96e6c4d20232cb91132ad6e4b2f78ee2a2cdf427821b416f131608c09e2f147c9d765d2b805a9fe09f0204ea0d51d962ab55265bbe52c32af5487
+
+Use the first output as JWT_ACCESS_SECRET.
+Use the second output as JWT_REFRESH_SECRET.
+
+IMPORTANT: Use completely different values in production than development.
+If a development secret is ever exposed, production remains safe.
+
+================================================================
+  FRONTEND ENVIRONMENT (Vercel)
+================================================================
+
+The React frontend has minimal environment configuration.
+In production, the only Vercel environment variable needed is:
+
+  NODE_ENV=production
+
+All sensitive values (API keys, JWT secrets) stay on the backend.
+The frontend never has direct access to any secret.
+
+For the Vite dev server, the frontend reads:
+  PORT          — dev server port (default 8443)
+  FIGMA_PUBLIC_URL — Figma Make deploy URL (optional)
+  FIGMA_DEV_SERVER_HOST — dev server host (optional)
+
+================================================================
+  CONFIGURATION VALIDATION
+================================================================
+
+The server validates critical config at startup or first use:
+
+JWT secrets (server startup):
+  → getSecret("JWT_ACCESS_SECRET") throws if:
+     - Variable is missing
+     - Value is less than 32 characters
+
+GEMINI_API_KEY (first API call):
+  → getGenAI() throws if:
+     - GEMINI_API_KEY is not set
+     - GEMINI_API_KEY starts with "CHANGE_ME"
+  → Error is surfaced as a 500 with descriptive message
+
+The server will refuse to start or will return clear errors
+rather than silently operating with invalid configuration.

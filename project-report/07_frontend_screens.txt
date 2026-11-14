@@ -1,0 +1,301 @@
+================================================================
+  SUPPORTAI — FRONTEND SCREENS & COMPONENTS
+================================================================
+
+================================================================
+  APPLICATION SHELL
+================================================================
+
+The entire frontend is a single React component tree in src/App.tsx.
+There is no React Router — navigation is controlled by a single
+state variable:
+
+  type Screen = "dashboard" | "assistant" | "human" |
+                "faqs"      | "history"   | "escalations"
+
+The App root renders:
+  - <Login />           when loggedIn === false
+  - <Shell /> + active screen  when loggedIn === true
+
+================================================================
+  SCREEN: LOGIN
+================================================================
+
+Component: Login({ onLogin })
+Route equivalent: /login (shown when not authenticated)
+
+What it does:
+  - Email + password form
+  - "Remember me" checkbox
+  - "Forgot password" button (UI only)
+  - "Create an account" link (UI only)
+  - On submit: sets loggedIn = true (demo mode — not wired to API)
+
+Note: The login screen is currently a demo UI. The backend
+      has a full /api/auth/login endpoint ready to wire up.
+
+================================================================
+  SCREEN: DASHBOARD
+================================================================
+
+Component: Dashboard({ onNavigate })
+Nav item: LayoutDashboard icon, "Dashboard"
+
+Sections:
+  1. Stats grid (4 cards)
+     - Total Queries: 1,284 (+12.5%)
+     - AI Answered: 1,096 (+18.2%)
+     - Escalated: 188 (-4.3%)
+     - Resolution Rate: 85.4% (+6.8%)
+     (Static demo data)
+
+  2. Support activity bar chart
+     - 14-day view of AI-answered vs escalated
+     - SelectField to switch to 30 days (UI only)
+     (Static hardcoded chart data)
+
+  3. AI insights card
+     - "18% faster this week" highlight
+     - Top query categories with progress bars
+     - Link to Query History
+
+  4. Recent queries table (last 4 entries)
+     - Customer name + avatar, query text, category, status badge, time
+     - "View all queries" → navigates to history
+
+================================================================
+  SCREEN: AI ASSISTANT
+================================================================
+
+Component: Assistant({ onToast })
+Nav item: Sparkles icon, "AI Assistant"
+
+This is the core live feature — fully connected to the backend.
+
+LEFT CARD — Composer:
+  - Textarea for customer query (max 2000 chars, with counter)
+  - Category selector: Orders / Payments / Refunds / Account / General
+  - Tone selector: Friendly & professional / Concise / Empathetic
+  - Gemini AI + RAG note (branding)
+  - "Generate response" button (disabled while loading)
+
+RIGHT CARD — Response:
+  - Shows streaming text as it arrives (typing cursor during stream)
+  - "Streaming…" badge while generating, "Ready" badge when done
+  - RAG source citations panel (blue chips with article title + score%)
+    shown below the response when ragEnabled = true
+  - Footer: Copy response button, Regenerate button,
+    "RAG · Gemini AI" or "Gemini AI" attribution
+  - Error state with "Try again" button on failure
+
+API calls:
+  POST /api/chat/stream   (SSE streaming, relative URL)
+
+SSE handling:
+  - First event parsed for { sources, ragEnabled }
+  - Subsequent events accumulate text chunks into full response
+  - { done: true } ends the stream
+
+State:
+  query, category, tone, response, generated, loading, error,
+  sources, ragEnabled, abortController
+
+================================================================
+  SCREEN: HUMAN ESCALATION
+================================================================
+
+Component: HumanEscalation({ onEscalate })
+Nav item: Headphones icon, "Human Escalation"
+
+Sections:
+  1. Warning banner
+     - "Human review required" amber badge
+     - Explanation of why escalation is needed
+
+  2. Customer question preview
+     - Static demo: Jordan Bell's subscription transfer query
+     - Intent identified / No matching policy / Generation blocked
+
+  3. Route to your team form
+     - Escalation reason selector
+     - Assign to selector (team groups)
+     - Internal note textarea
+     - Priority picker (Low / Normal / High / Urgent)
+     - "Escalate to human" button
+     - Average response time note
+
+On escalate: shows toast, navigates to escalations screen (650ms delay)
+
+Note: Form is UI only — escalation routing to real agents
+      would require wiring to the tickets API.
+
+================================================================
+  SCREEN: FAQ MANAGEMENT (KNOWLEDGE BASE)
+================================================================
+
+Component: FaqManagement({ onToast })
+Nav item: FileQuestion icon, "FAQ Management"
+
+Fully connected to the backend /api/kb endpoints.
+
+Toolbar:
+  - Search input (filters by title and content client-side)
+  - Category filter tabs: All / Orders / Payments / Refunds /
+    Account / Technical / General
+
+Article list:
+  - Category icon, title, category badge, content preview (160 chars)
+  - Tags row (comma-separated chips)
+  - "Updated <date>" from updated_at
+  - Edit button → opens modal
+  - Delete button → DELETE /api/kb/:id with spinner
+
+Loading state: spinner while fetching
+Error state: retry button if fetch fails
+Empty state: "No articles found" with search icon
+
+Add/Edit modal:
+  - Category selector
+  - Title input
+  - Content textarea (6 rows)
+  - Tags input (comma-separated, displays as chips preview)
+  - Save / Cancel buttons with loading spinner
+
+API calls:
+  GET    /api/kb?category=...    (on mount and category change)
+  POST   /api/kb                 (create)
+  PATCH  /api/kb/:id             (edit)
+  DELETE /api/kb/:id             (delete)
+
+Footer: article count, "Knowledge base synced with Gemini RAG"
+
+================================================================
+  SCREEN: QUERY HISTORY
+================================================================
+
+Component: QueryHistory()
+Nav item: History icon, "Query History"
+
+Summary bar:
+  - Total queries: 1,284
+  - Avg response time: 42 sec
+  - Resolved by AI: 85.4%
+
+Toolbar:
+  - Search input (filters recentQueries by customer + query)
+  - Status filter: All statuses / Answered / Escalated / Pending
+  - Date range filter: Last 30 days / Last 7 days / Today (UI only)
+
+Table (QueryTable component):
+  - Customer avatar + name + query ID
+  - Query text
+  - Category
+  - Status badge (green=Answered, red=Escalated, amber=Pending)
+  - Received time
+  - Action button (...)
+
+Pagination bar: Previous / 1 / 2 / 3 / … / 64 / Next (UI only)
+Export CSV button (UI only)
+
+Note: Currently uses static recentQueries array.
+      Would wire to GET /api/tickets for live data.
+
+================================================================
+  SCREEN: ESCALATIONS
+================================================================
+
+Component: Escalations()
+Nav item: Users icon, "Escalations" (count badge: 4)
+
+Tabs:
+  Pending (2) / In Progress (2) / Resolved (124)
+
+Table (per tab):
+  - Query subject + escalation ID
+  - Customer name
+  - Priority badge (red=Urgent, amber=High, blue=Medium)
+  - Assigned agent avatar + name
+  - Wait time
+  - Assign / Open button
+
+Empty state: "Queue is clear" with checkmark icon
+
+Footer card:
+  - "Healthy response time" insight
+  - "View team performance" link
+
+Note: Uses static escalationRows data.
+
+================================================================
+  PRIMITIVE COMPONENTS
+================================================================
+
+All built from scratch — no external component library.
+
+Button({ children, variant, icon, onClick, type, disabled, className })
+  Variants: primary | secondary | ghost | danger
+  Rendered as <button> with .btn .btn-{variant} classes
+
+Badge({ children, tone })
+  Tones: green | amber | red | blue | purple | gray
+  Rendered as <span> with colored dot + text
+
+Input({ label, icon, type, placeholder, value, onChange, required })
+  Wraps <input> with optional label and icon prefix
+
+SelectField({ label, value, onChange, children })
+  Wraps <select> with label and chevron icon
+
+Card({ children, className })
+  <div class="card"> — white surface with shadow and border
+
+PageHeader({ title, description, action })
+  Page title + description + optional action button on the right
+
+Avatar({ name, color })
+  Initials-based avatar circle in purple/blue/green/etc.
+
+Modal({ title, description, onClose, children })
+  Backdrop + centered dialog with close button
+  Clicking backdrop also closes
+
+================================================================
+  GLOBAL STATE
+================================================================
+
+App root state:
+  loggedIn      boolean         — drives Login vs Shell render
+  screen        Screen          — currently active screen
+  sidebarOpen   boolean         — mobile sidebar state
+  toast         string          — ephemeral notification text
+
+Toast system:
+  showToast(message) sets toast text, auto-clears after 2800ms
+  Rendered as a fixed-position bottom bar with CheckCircle2 icon
+
+================================================================
+  STYLING SYSTEM
+================================================================
+
+Tailwind CSS v4 (utility classes)
+Custom CSS variables in :root (src/index.css):
+  --primary, --primary-dark, --primary-soft
+  --background, --surface, --text, --muted, --subtle, --border
+  --green, --green-soft, --amber, --amber-soft
+  --red, --red-soft, --blue, --blue-soft
+  --radius, --shadow
+
+Custom class-based components (not Tailwind utilities):
+  .btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger
+  .badge, .badge-{tone}
+  .card, .page-header
+  .nav-item, .sidebar, .topbar
+  .field, .textarea-field, .select-wrap
+  .faq-row, .faq-category, .faq-{category}
+  .rag-sources, .rag-source-chip, .rag-source-num, .rag-source-score
+  .kb-tags
+  .stat-card, .chart-card, .insights-card
+  .table-scroll, .customer-cell, .query-cell
+  .modal, .modal-backdrop, .modal-head, .modal-body
+  .toast
+  .login-page, .login-panel, .login-form

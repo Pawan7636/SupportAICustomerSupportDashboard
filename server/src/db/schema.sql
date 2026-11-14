@@ -74,6 +74,24 @@ CREATE INDEX IF NOT EXISTS idx_replies_ticket     ON replies (ticket_id);
 CREATE INDEX IF NOT EXISTS idx_replies_author     ON replies (author_id);
 CREATE INDEX IF NOT EXISTS idx_replies_created_at ON replies (created_at);
 
+-- ── Knowledge base articles (RAG source) ─────────────────────────────────────
+CREATE TABLE IF NOT EXISTS knowledge_base (
+  id          TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  content     TEXT NOT NULL,
+  category    TEXT NOT NULL DEFAULT 'general'
+                CHECK (category IN ('orders', 'payments', 'refunds', 'account', 'technical', 'general')),
+  tags        TEXT NOT NULL DEFAULT '[]',   -- JSON array of tag strings
+  embedding   TEXT,                         -- JSON array of floats (text-embedding-004, 768-dim)
+  is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_category   ON knowledge_base (category);
+CREATE INDEX IF NOT EXISTS idx_kb_is_active  ON knowledge_base (is_active);
+CREATE INDEX IF NOT EXISTS idx_kb_created_at ON knowledge_base (created_at DESC);
+
 -- ── Audit log ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_log (
   id         TEXT PRIMARY KEY,

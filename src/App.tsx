@@ -1,9 +1,10 @@
-import { FormEvent, ReactNode, useMemo, useState } from "react"
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react"
 import {
   AlertCircle,
   ArrowRight,
   Bell,
   Bot,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -17,6 +18,7 @@ import {
   History,
   Inbox,
   LayoutDashboard,
+  Loader2,
   LogOut,
   Mail,
   Menu,
@@ -28,6 +30,7 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Tag,
   Trash2,
   TrendingUp,
   Users,
@@ -35,9 +38,10 @@ import {
   Zap,
 } from "lucide-react"
 
-// API calls go directly to the backend.
-// In development the backend runs on port 3001 alongside the frontend on 8443.
-const API_BASE = "http://localhost:3001"
+// API calls go through the Vite dev proxy (/api → http://localhost:3001).
+// Using a relative base means this works in both dev and production without
+// any hardcoded host/port.
+const API_BASE = ""
 
 type Screen = "dashboard" | "assistant" | "human" | "faqs" | "history" | "escalations"
 type BadgeTone = "green" | "amber" | "red" | "blue" | "purple" | "gray"
@@ -51,36 +55,27 @@ const navItems = [
   { id: "escalations" as Screen, label: "Escalations", icon: Users, count: 4 },
 ]
 
-const initialFaqs = [
-  {
-    id: 1,
-    question: "How can I track my order?",
-    answer: "Open Orders, select your order, and use the live tracking link.",
-    category: "Orders",
-    updated: "2 hours ago",
-  },
-  {
-    id: 2,
-    question: "What payment methods are accepted?",
-    answer: "We accept all major credit cards, PayPal, and Apple Pay.",
-    category: "Payments",
-    updated: "Yesterday",
-  },
-  {
-    id: 3,
-    question: "How long do refunds take?",
-    answer: "Approved refunds are returned within 5–7 business days.",
-    category: "Refunds",
-    updated: "3 days ago",
-  },
-  {
-    id: 4,
-    question: "How do I reset my password?",
-    answer: "Choose Forgot password on the sign-in page and follow the email link.",
-    category: "Account",
-    updated: "1 week ago",
-  },
-]
+// KB article shape returned by the backend
+type KbCategory = "orders" | "payments" | "refunds" | "account" | "technical" | "general"
+
+interface KbArticle {
+  id: string
+  title: string
+  content: string
+  category: KbCategory
+  tags: string[]
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+// RAG source citation returned alongside Gemini responses
+interface RagSource {
+  id: string
+  title: string
+  category: string
+  score: number
+}
 
 const recentQueries = [
   {
@@ -477,7 +472,7 @@ function QueryTable({ rows }: { rows: typeof recentQueries }) {
   )
 }
 
-// ─── AI Assistant (Gemini-powered) ────────────────────────────────────────────
+// ─── AI Assistant (Gemini + RAG) ─────────────────────────────────────────────
 
 function Assistant({ onToast }: { onToast: (text: string) => void }) {
   const [query, setQuery] = useState(
@@ -489,6 +484,8 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
   const [generated, setGenerated] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  const [sources, setSources] = useState<RagSource[]>([])
+  const [ragEnabled, setRagEnabled] = useState(false)
   const abortRef = useMemo(() => ({ current: null as AbortController | null }), [])
 
   const generate = async () => {
@@ -497,8 +494,9 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
     setGenerated(false)
     setResponse("")
     setError("")
+    setSources([])
+    setRagEnabled(false)
 
-    // Cancel any in-flight request
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -528,8 +526,19 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
         for (const line of text.split("\n")) {
           if (!line.startsWith("data: ")) continue
           try {
-            const payload = JSON.parse(line.slice(6)) as { chunk?: string; done?: boolean; error?: string }
+            const payload = JSON.parse(line.slice(6)) as {
+              chunk?: string
+              done?: boolean
+              error?: string
+              sources?: RagSource[]
+              ragEnabled?: boolean
+            }
             if (payload.error) throw new Error(payload.error)
+            // First event carries RAG sources
+            if (payload.sources !== undefined) {
+              setSources(payload.sources)
+              setRagEnabled(payload.ragEnabled ?? false)
+            }
             if (payload.chunk) { full += payload.chunk; setResponse(full) }
             if (payload.done) break outer
           } catch (parseErr) {
@@ -601,8 +610,8 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
           <div className="composer-note">
             <Bot size={16} />
             <span>
-              <strong>Gemini AI</strong>Responses are generated live by Google
-              Gemini and tailored to the selected category and tone.
+              <strong>Gemini AI + RAG</strong>Responses are grounded in your
+              knowledge base and generated live by Google Gemini.
             </span>
           </div>
           <Button
@@ -646,6 +655,26 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
                 ))}
                 {loading && <span className="typing-cursor" />}
               </div>
+
+              {/* ── RAG source citations ── */}
+              {ragEnabled && sources.length > 0 && (
+                <div className="rag-sources">
+                  <div className="rag-sources-header">
+                    <BookOpen size={14} />
+                    <span>Sources from knowledge base</span>
+                  </div>
+                  <div className="rag-source-list">
+                    {sources.map((src, i) => (
+                      <span key={src.id} className="rag-source-chip">
+                        <span className="rag-source-num">{i + 1}</span>
+                        {src.title}
+                        <span className="rag-source-score">{Math.round(src.score * 100)}%</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {!loading && (
                 <div className="response-footer">
                   <div>
@@ -657,7 +686,8 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
                     </Button>
                   </div>
                   <span>
-                    <CheckCircle2 size={15} /> Generated by Gemini AI
+                    <CheckCircle2 size={15} />
+                    {ragEnabled ? "RAG · Gemini AI" : "Gemini AI"}
                   </span>
                 </div>
               )}
@@ -668,7 +698,7 @@ function Assistant({ onToast }: { onToast: (text: string) => void }) {
               <h3>{loading ? "Crafting your response…" : "Ready when you are"}</h3>
               <p>
                 {loading
-                  ? "Gemini is writing a tailored response for this query."
+                  ? "Gemini is searching the knowledge base and writing a tailored response."
                   : "Select a category and tone, then click Generate response."}
               </p>
             </div>
@@ -765,94 +795,265 @@ function HumanEscalation({ onEscalate }: { onEscalate: () => void }) {
   )
 }
 
-// ─── FAQ Management ───────────────────────────────────────────────────────────
+// ─── FAQ Management (Knowledge Base) ─────────────────────────────────────────
+
+// Map KB category strings (lowercase) to display labels
+const CATEGORY_LABELS: Record<string, string> = {
+  orders: "Orders", payments: "Payments", refunds: "Refunds",
+  account: "Account", technical: "Technical", general: "General",
+}
 
 function FaqManagement({ onToast }: { onToast: (text: string) => void }) {
-  const [faqs, setFaqs] = useState(initialFaqs)
+  const [articles, setArticles] = useState<KbArticle[]>([])
+  const [loadingList, setLoadingList] = useState(true)
+  const [listError, setListError] = useState("")
   const [query, setQuery] = useState("")
-  const [category, setCategory] = useState("All")
-  const [modal, setModal] = useState<null | { id?: number; question: string; answer: string; category: string }>(null)
+  const [category, setCategory] = useState("all")
+  const [modal, setModal] = useState<null | {
+    id?: string
+    title: string
+    content: string
+    category: KbCategory
+    tags: string[]
+    tagsInput: string
+  }>(null)
+  const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  const filtered = faqs.filter(
-    (faq) => (category === "All" || faq.category === category) &&
-      faq.question.toLowerCase().includes(query.toLowerCase()),
+  // ── Fetch articles from the backend ────────────────────────────────────────
+  const fetchArticles = async (cat?: string) => {
+    setLoadingList(true)
+    setListError("")
+    try {
+      const url = cat && cat !== "all"
+        ? `${API_BASE}/api/kb?category=${cat}`
+        : `${API_BASE}/api/kb`
+      const res = await fetch(url)
+      const json = await res.json() as { success: boolean; data: KbArticle[]; error?: string }
+      if (!json.success) throw new Error(json.error ?? "Failed to load articles")
+      setArticles(json.data)
+    } catch (err) {
+      setListError((err as Error).message ?? "Failed to load knowledge base")
+    } finally {
+      setLoadingList(false)
+    }
+  }
+
+  useEffect(() => { fetchArticles(category) }, [category])
+
+  // ── Client-side text filter ─────────────────────────────────────────────────
+  const filtered = articles.filter(
+    (a) => a.title.toLowerCase().includes(query.toLowerCase()) ||
+           a.content.toLowerCase().includes(query.toLowerCase()),
   )
 
-  const save = () => {
-    if (!modal?.question || !modal.answer) return
-    if (modal.id)
-      setFaqs(faqs.map((faq) => faq.id === modal.id ? { ...faq, ...modal, updated: "Just now" } : faq))
-    else
-      setFaqs([{ ...modal, id: Date.now(), updated: "Just now" }, ...faqs])
-    setModal(null)
-    onToast(modal.id ? "FAQ updated successfully" : "FAQ added to knowledge base")
+  // ── Save (create or update) ─────────────────────────────────────────────────
+  const save = async () => {
+    if (!modal?.title.trim() || !modal.content.trim()) return
+    setSaving(true)
+    try {
+      const isEdit = Boolean(modal.id)
+      const url    = isEdit ? `${API_BASE}/api/kb/${modal.id}` : `${API_BASE}/api/kb`
+      const method = isEdit ? "PATCH" : "POST"
+
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title:    modal.title,
+          content:  modal.content,
+          category: modal.category,
+          tags:     modal.tags,
+        }),
+      })
+      const json = await res.json() as { success: boolean; data: KbArticle; error?: string }
+      if (!json.success) throw new Error(json.error ?? "Save failed")
+
+      if (isEdit) {
+        setArticles(articles.map((a) => a.id === modal.id ? json.data : a))
+      } else {
+        setArticles([json.data, ...articles])
+      }
+      setModal(null)
+      onToast(isEdit ? "Article updated — embedding refreshing in background" : "Article added to knowledge base")
+    } catch (err) {
+      onToast("Error: " + (err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ── Delete ──────────────────────────────────────────────────────────────────
+  const remove = async (id: string) => {
+    setDeletingId(id)
+    try {
+      const res = await fetch(`${API_BASE}/api/kb/${id}`, { method: "DELETE" })
+      const json = await res.json() as { success: boolean; error?: string }
+      if (!json.success) throw new Error(json.error ?? "Delete failed")
+      setArticles(articles.filter((a) => a.id !== id))
+      onToast("Article removed from knowledge base")
+    } catch (err) {
+      onToast("Error: " + (err as Error).message)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const openAdd = () => setModal({
+    title: "", content: "", category: "general", tags: [], tagsInput: "",
+  })
+
+  const openEdit = (a: KbArticle) => setModal({
+    id: a.id, title: a.title, content: a.content,
+    category: a.category, tags: a.tags, tagsInput: a.tags.join(", "),
+  })
+
+  const syncTags = (raw: string) => {
+    if (!modal) return
+    const tags = raw.split(",").map((t) => t.trim()).filter(Boolean)
+    setModal({ ...modal, tagsInput: raw, tags })
   }
 
   return (
     <>
       <PageHeader
-        title="FAQ Management"
-        description="Manage the trusted knowledge SupportAI uses to answer customers."
+        title="Knowledge Base"
+        description="Manage the verified articles SupportAI uses to ground its AI responses (RAG)."
         action={
-          <Button icon={<Plus size={17} />} onClick={() => setModal({ question: "", answer: "", category: "General" })}>
-            Add FAQ
+          <Button icon={<Plus size={17} />} onClick={openAdd}>
+            Add article
           </Button>
         }
       />
       <Card className="faq-card">
         <div className="faq-toolbar">
-          <Input icon={<Search size={17} />} placeholder="Search questions or answers..." value={query} onChange={setQuery} />
+          <Input icon={<Search size={17} />} placeholder="Search articles..." value={query} onChange={setQuery} />
           <div className="filter-tabs">
-            {["All", "Orders", "Payments", "Refunds", "Account", "General"].map((item) => (
-              <button className={category === item ? "active" : ""} onClick={() => setCategory(item)} key={item}>{item}</button>
+            {["all", "orders", "payments", "refunds", "account", "technical", "general"].map((item) => (
+              <button
+                className={category === item ? "active" : ""}
+                onClick={() => setCategory(item)}
+                key={item}
+              >
+                {item === "all" ? "All" : CATEGORY_LABELS[item]}
+              </button>
             ))}
           </div>
         </div>
-        <div className="faq-list">
-          {filtered.map((faq) => (
-            <div className="faq-row" key={faq.id}>
-              <span className={`faq-category faq-${faq.category.toLowerCase()}`}><FileQuestion size={18} /></span>
-              <div className="faq-content">
-                <div><h3>{faq.question}</h3><Badge tone="purple">{faq.category}</Badge></div>
-                <p>{faq.answer}</p>
-                <small>Updated {faq.updated}</small>
+
+        {loadingList ? (
+          <div className="empty-list">
+            <Loader2 size={26} className="spin" />
+            <h3>Loading knowledge base…</h3>
+          </div>
+        ) : listError ? (
+          <div className="empty-list">
+            <AlertCircle size={26} style={{ color: "var(--red)" }} />
+            <h3>Failed to load</h3>
+            <p style={{ color: "var(--red)" }}>{listError}</p>
+            <Button variant="secondary" onClick={() => fetchArticles(category)} icon={<RefreshCw size={15} />} className="mt-3">
+              Retry
+            </Button>
+          </div>
+        ) : (
+          <div className="faq-list">
+            {filtered.map((article) => (
+              <div className="faq-row" key={article.id}>
+                <span className={`faq-category faq-${article.category}`}><FileQuestion size={18} /></span>
+                <div className="faq-content">
+                  <div>
+                    <h3>{article.title}</h3>
+                    <Badge tone="purple">{CATEGORY_LABELS[article.category] ?? article.category}</Badge>
+                  </div>
+                  <p>{article.content.slice(0, 160)}{article.content.length > 160 ? "…" : ""}</p>
+                  {article.tags.length > 0 && (
+                    <div className="kb-tags">
+                      <Tag size={12} />
+                      {article.tags.map((t) => <span key={t}>{t}</span>)}
+                    </div>
+                  )}
+                  <small>Updated {new Date(article.updated_at).toLocaleDateString()}</small>
+                </div>
+                <div className="faq-actions">
+                  <button onClick={() => openEdit(article)}><Edit3 size={17} /></button>
+                  <button
+                    className="delete"
+                    disabled={deletingId === article.id}
+                    onClick={() => remove(article.id)}
+                  >
+                    {deletingId === article.id
+                      ? <Loader2 size={17} className="spin" />
+                      : <Trash2 size={17} />}
+                  </button>
+                </div>
               </div>
-              <div className="faq-actions">
-                <button onClick={() => setModal({ ...faq })}><Edit3 size={17} /></button>
-                <button className="delete" onClick={() => { setFaqs(faqs.filter((item) => item.id !== faq.id)); onToast("FAQ removed") }}>
-                  <Trash2 size={17} />
-                </button>
+            ))}
+            {!filtered.length && (
+              <div className="empty-list">
+                <Search size={26} /><h3>No articles found</h3>
+                <p>Try a different search or category.</p>
               </div>
-            </div>
-          ))}
-          {!filtered.length && (
-            <div className="empty-list">
-              <Search size={26} /><h3>No FAQs found</h3><p>Try a different search or category.</p>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
+
         <div className="list-footer">
-          <span>Showing {filtered.length} of {faqs.length} FAQs</span>
-          <span><CheckCircle2 size={15} /> Knowledge base synced just now</span>
+          <span>Showing {filtered.length} of {articles.length} articles</span>
+          <span><CheckCircle2 size={15} /> Knowledge base synced with Gemini RAG</span>
         </div>
       </Card>
+
       {modal && (
-        <Modal title={modal.id ? "Edit FAQ" : "Add new FAQ"}
-          description="SupportAI will use this approved content when generating responses."
-          onClose={() => setModal(null)}>
-          <SelectField label="Category" value={modal.category} onChange={(value) => setModal({ ...modal, category: value })}>
-            {["Orders", "Payments", "Refunds", "Account", "General"].map((item) => <option key={item}>{item}</option>)}
+        <Modal
+          title={modal.id ? "Edit article" : "Add knowledge base article"}
+          description="SupportAI will use this verified content to ground AI-generated responses."
+          onClose={() => setModal(null)}
+        >
+          <SelectField
+            label="Category"
+            value={modal.category}
+            onChange={(value) => setModal({ ...modal, category: value as KbCategory })}
+          >
+            {Object.entries(CATEGORY_LABELS).map(([val, label]) => (
+              <option key={val} value={val}>{label}</option>
+            ))}
           </SelectField>
-          <Input label="Question" value={modal.question}
-            onChange={(value) => setModal({ ...modal, question: value })} placeholder="What do customers usually ask?" />
+          <Input
+            label="Title"
+            value={modal.title}
+            onChange={(value) => setModal({ ...modal, title: value })}
+            placeholder="e.g. How to track your order"
+          />
           <label className="field textarea-field compact">
-            <span className="field-label">Approved answer</span>
-            <textarea value={modal.answer} onChange={(e) => setModal({ ...modal, answer: e.target.value })}
-              placeholder="Write a clear, factual answer..." />
+            <span className="field-label">Content</span>
+            <textarea
+              value={modal.content}
+              onChange={(e) => setModal({ ...modal, content: e.target.value })}
+              placeholder="Write the full answer here — be specific and accurate..."
+              rows={6}
+            />
           </label>
+          <Input
+            label="Tags (comma-separated)"
+            value={modal.tagsInput}
+            onChange={syncTags}
+            placeholder="e.g. tracking, shipment, delivery"
+            icon={<Tag size={15} />}
+          />
+          {modal.tags.length > 0 && (
+            <div className="kb-tags" style={{ marginTop: "0.25rem" }}>
+              {modal.tags.map((t) => <span key={t}>{t}</span>)}
+            </div>
+          )}
           <div className="modal-actions">
             <Button variant="secondary" onClick={() => setModal(null)}>Cancel</Button>
-            <Button onClick={save}>{modal.id ? "Save changes" : "Add FAQ"}</Button>
+            <Button
+              onClick={save}
+              disabled={saving || !modal.title.trim() || !modal.content.trim()}
+              icon={saving ? <Loader2 size={15} className="spin" /> : undefined}
+            >
+              {saving ? "Saving…" : modal.id ? "Save changes" : "Add article"}
+            </Button>
           </div>
         </Modal>
       )}

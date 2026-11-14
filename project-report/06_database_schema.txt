@@ -1,0 +1,234 @@
+================================================================
+  SUPPORTAI — DATABASE SCHEMA
+================================================================
+
+Database engine:  SQLite (via Node.js built-in node:sqlite)
+File location:    ./data/support.db  (dev) / /data/support.db (prod)
+Journal mode:     WAL (Write-Ahead Logging) — better concurrent reads
+Foreign keys:     ON — referential integrity enforced
+Busy timeout:     5000ms — waits for locks before failing
+Synchronous:      NORMAL — good balance of safety and performance
+Timestamps:       ISO-8601 strings in UTC ("2026-11-13T12:00:00.000Z")
+IDs:              UUID v4 (TEXT PRIMARY KEY) for all tables
+
+================================================================
+  TABLE: users
+================================================================
+
+Purpose: All user accounts — customers, agents, and admins.
+
+  Column         Type     Constraints
+  ─────────────────────────────────────────────────────────────
+  id             TEXT     PRIMARY KEY (UUID v4)
+  email          TEXT     NOT NULL, UNIQUE, COLLATE NOCASE
+  password_hash  TEXT     NOT NULL (bcrypt, never stored in plain)
+  full_name      TEXT     NOT NULL
+  role           TEXT     NOT NULL, CHECK IN ('customer','agent','admin')
+  is_active      INTEGER  NOT NULL DEFAULT 1, CHECK IN (0,1)
+  created_at     TEXT     NOT NULL DEFAULT (strftime ISO-8601 now)
+  updated_at     TEXT     NOT NULL DEFAULT (strftime ISO-8601 now)
+
+Indexes:
+  idx_users_email   ON (email)   — login lookup
+  idx_users_role    ON (role)    — role filtering
+
+Business rules:
+  - Customers self-register via POST /api/auth/register
+  - Agents and admins are created by admins via POST /api/users
+  - Deactivated accounts (is_active=0) cannot log in
+  - Deleting a user is blocked if they own tickets (RESTRICT)
+
+================================================================
+  TABLE: refresh_tokens
+================================================================
+
+Purpose: Stores hashed refresh tokens for JWT rotation.
+
+  Column      Type     Constraints
+  ─────────────────────────────────────────────────────────────
+  id          TEXT     PRIMARY KEY (UUID v4)
+  user_id     TEXT     NOT NULL, REFERENCES users(id) ON DELETE CASCADE
+  token_hash  TEXT     NOT NULL, UNIQUE (SHA-256 of raw token)
+  expires_at  TEXT     NOT NULL (ISO-8601)
+  revoked     INTEGER  NOT NULL DEFAULT 0, CHECK IN (0,1)
+  created_at  TEXT     NOT NULL DEFAULT (strftime ISO-8601 now)
+
+Indexes:
+  idx_refresh_tokens_user   ON (user_id)    — revoke all by user
+  idx_refresh_tokens_hash   ON (token_hash) — lookup on refresh
+
+Business rules:
+  - Raw token NEVER stored — only SHA-256 hash
+  - On refresh: old token marked revoked=1, new pair issued
+  - Replaying a revoked token returns 401
+  - On user delete: all tokens deleted (CASCADE)
+
+================================================================
+  TABLE: tickets
+================================================================
+
+Purpose: Customer support tickets — the core entity.
+
+  Column             Type     Constraints
+  ─────────────────────────────────────────────────────────────
+  id                 TEXT     PRIMARY KEY (UUID v4)
+  subject            TEXT     NOT NULL
+  description        TEXT     NOT NULL
+  status             TEXT     NOT NULL DEFAULT 'open'
+                              CHECK IN ('open','pending','in_progress',
+                                        'resolved','closed')
+  priority           TEXT     NOT NULL DEFAULT 'medium'
+                              CHECK IN ('low','medium','high','urgent')
+  category           TEXT     NOT NULL DEFAULT 'general'
+                              CHECK IN ('orders','payments','refunds',
+                                        'account','technical','general')
+  customer_id        TEXT     NOT NULL, REFERENCES users(id) ON DELETE RESTRICT
+  assigned_agent_id  TEXT     REFERENCES users(id) ON DELETE SET NULL
+  created_at         TEXT     NOT NULL DEFAULT now
+  updated_at         TEXT     NOT NULL DEFAULT now
+  closed_at          TEXT     NULL (set when status = 'closed')
+
+Indexes:
+  idx_tickets_customer     ON (customer_id)
+  idx_tickets_agent        ON (assigned_agent_id)
+  idx_tickets_status       ON (status)
+  idx_tickets_priority     ON (priority)
+  idx_tickets_category     ON (category)
+  idx_tickets_created_at   ON (created_at DESC) — default sort order
+
+Business rules:
+  - customer_id cannot be deleted if they have tickets (RESTRICT)
+  - assigned_agent_id set to NULL if agent deleted (SET NULL)
+  - closed_at populated when status changes to 'closed'
+  - Customer reply on 'resolved' ticket auto-sets status back to 'open'
+
+Status workflow:
+  open → pending → in_progress → resolved → closed
+  (Any transition allowed for agents; re-open from resolved if customer replies)
+
+================================================================
+  TABLE: replies
+================================================================
+
+Purpose: Ticket replies and internal notes.
+
+  Column           Type     Constraints
+  ─────────────────────────────────────────────────────────────
+  id               TEXT     PRIMARY KEY (UUID v4)
+  ticket_id        TEXT     NOT NULL, REFERENCES tickets(id) ON DELETE CASCADE
+  author_id        TEXT     NOT NULL, REFERENCES users(id) ON DELETE RESTRICT
+  body             TEXT     NOT NULL
+  is_internal_note INTEGER  NOT NULL DEFAULT 0, CHECK IN (0,1)
+  created_at       TEXT     NOT NULL DEFAULT now
+  updated_at       TEXT     NOT NULL DEFAULT now
+
+Indexes:
+  idx_replies_ticket      ON (ticket_id)   — load all replies for ticket
+  idx_replies_author      ON (author_id)   — find replies by user
+  idx_replies_created_at  ON (created_at)  — chronological ordering
+
+Business rules:
+  - is_internal_note=1 entries NEVER returned to customers
+  - Customers cannot create internal notes (403)
+  - Only author or admin can edit a reply body
+  - Reply deleted with ticket (CASCADE)
+  - Author cannot be deleted while they have replies (RESTRICT)
+
+================================================================
+  TABLE: audit_log
+================================================================
+
+Purpose: Immutable record of every change to a ticket.
+
+  Column     Type     Constraints
+  ─────────────────────────────────────────────────────────────
+  id         TEXT     PRIMARY KEY (UUID v4)
+  ticket_id  TEXT     NOT NULL, REFERENCES tickets(id) ON DELETE CASCADE
+  actor_id   TEXT     NOT NULL, REFERENCES users(id) ON DELETE RESTRICT
+  action     TEXT     NOT NULL
+                      CHECK IN ('created','status_changed','priority_changed',
+                                'assigned','unassigned','reply_added',
+                                'note_added','closed')
+  old_value  TEXT     NULL (previous value, e.g. "open")
+  new_value  TEXT     NULL (new value, e.g. "in_progress")
+  created_at TEXT     NOT NULL DEFAULT now
+
+Indexes:
+  idx_audit_ticket      ON (ticket_id)        — full history for ticket
+  idx_audit_created_at  ON (created_at DESC)  — chronological order
+
+Business rules:
+  - Only agents and admins can view audit log (GET /tickets/:id/audit)
+  - Entries are created server-side — not writable via API
+  - Deleted with ticket (CASCADE)
+
+================================================================
+  TABLE: knowledge_base
+================================================================
+
+Purpose: RAG knowledge base — articles with vector embeddings.
+
+  Column      Type     Constraints
+  ─────────────────────────────────────────────────────────────
+  id          TEXT     PRIMARY KEY (UUID v4)
+  title       TEXT     NOT NULL
+  content     TEXT     NOT NULL (up to 10,000 chars)
+  category    TEXT     NOT NULL DEFAULT 'general'
+                       CHECK IN ('orders','payments','refunds',
+                                 'account','technical','general')
+  tags        TEXT     NOT NULL DEFAULT '[]'  (JSON array of strings)
+  embedding   TEXT     NULL  (JSON array of 768 floats)
+  is_active   INTEGER  NOT NULL DEFAULT 1, CHECK IN (0,1)
+  created_at  TEXT     NOT NULL DEFAULT now
+  updated_at  TEXT     NOT NULL DEFAULT now
+
+Indexes:
+  idx_kb_category    ON (category)         — category filtering
+  idx_kb_is_active   ON (is_active)        — exclude inactive articles
+  idx_kb_created_at  ON (created_at DESC)  — default sort order
+
+Business rules:
+  - Embeddings generated asynchronously on create/update
+  - Articles with embedding=NULL are skipped during RAG retrieval
+  - is_active=0 excludes article from RAG and list endpoints
+  - No foreign key relations — standalone content table
+  - Text search available via LIKE on title/content
+  - Semantic search via cosine similarity in Node.js
+
+================================================================
+  DATABASE CONFIGURATION DETAILS
+================================================================
+
+PRAGMA journal_mode = WAL
+  Write-Ahead Logging allows concurrent reads during writes.
+  Important for multi-user concurrent access patterns.
+
+PRAGMA foreign_keys = ON
+  Enforces all REFERENCES constraints at runtime.
+  Prevents orphaned records.
+
+PRAGMA busy_timeout = 5000
+  If the DB is locked, wait up to 5 seconds before failing.
+  Handles burst write scenarios gracefully.
+
+PRAGMA synchronous = NORMAL
+  Writes are flushed to OS but not necessarily to disk on every commit.
+  Safe with WAL mode — good balance of safety vs performance.
+
+================================================================
+  AUTO-MIGRATION
+================================================================
+
+File: server/src/db/autoMigrate.ts
+
+The function runSchema() is called on every server startup:
+  1. Reads schema.sql from disk
+  2. Executes all CREATE TABLE IF NOT EXISTS statements
+  3. Executes all CREATE INDEX IF NOT EXISTS statements
+  4. Fully idempotent — safe to run repeatedly
+
+This means:
+  - No manual migration needed in development
+  - New tables/indexes added in schema.sql appear on next restart
+  - Existing data is never touched (IF NOT EXISTS)
+  - Production deploy automatically applies schema changes

@@ -1,0 +1,122 @@
+================================================================
+  SUPPORTAI — PROJECT REPORT INDEX
+================================================================
+
+This folder contains a complete technical report for the
+SupportAI Customer Support Dashboard project.
+
+================================================================
+  FILES IN THIS REPORT
+================================================================
+
+00_index.txt
+  This file. Contents guide and reading order.
+
+01_project_overview.txt
+  What the project is, who it is for, what it does,
+  and the top-level file/folder structure.
+
+02_tech_stack.txt
+  Every library, framework, and tool used in the project
+  with version numbers and purpose. Frontend, backend,
+  infrastructure, and development tools.
+
+03_architecture.txt
+  System architecture diagrams (ASCII), request lifecycle
+  walkthroughs for the RAG chat and authentication flows,
+  database entity relationships, frontend component tree,
+  and security architecture overview.
+
+04_backend_routes.txt
+  Complete REST API reference. Every endpoint with:
+  - HTTP method and path
+  - Authentication requirements
+  - Request body / query params
+  - Response shape
+  - Business rules and edge cases
+
+05_rag_system.txt
+  Deep-dive into the Retrieval-Augmented Generation system:
+  - What RAG is and why it is used
+  - Step-by-step pipeline with ASCII diagram
+  - Knowledge base storage design
+  - Embedding generation process
+  - Cosine similarity algorithm
+  - Graceful degradation behaviour
+  - Seed data catalogue (20 articles)
+  - Performance characteristics and scaling notes
+
+06_database_schema.txt
+  Every SQLite table with column definitions, constraints,
+  indexes, and business rules. Includes WAL/PRAGMA config
+  and auto-migration explanation.
+
+07_frontend_screens.txt
+  All six application screens documented with what they
+  show, what state they manage, which API calls they make,
+  and UI component details. Plus the primitive component
+  library and styling system.
+
+08_authentication_security.txt
+  JWT dual-token strategy, token lifecycle, role-based
+  access control permission matrix, password security,
+  timing attack prevention, transport security (helmet),
+  CORS configuration, rate limiting, and API key safety.
+
+09_environment_configuration.txt
+  Every environment variable with default value, purpose,
+  and example. Complete .env templates for development
+  and production. Secret generation instructions.
+
+10_deployment_guide.txt
+  Step-by-step guide for deploying:
+  - Backend to Render (Web Service + Persistent Disk)
+  - Frontend to Vercel (with /api rewrite proxy)
+  - Verification checklist, custom domains, troubleshooting.
+
+================================================================
+  QUICK REFERENCE — KEY FACTS
+================================================================
+
+PROJECT TYPE     Full-stack AI-powered customer support SaaS
+FRONTEND         React 19 + Vite 8 + Tailwind CSS v4
+BACKEND          Node.js 22 + Express 4 + TypeScript 5.7
+DATABASE         SQLite (node:sqlite, WAL mode)
+AI MODEL         Google Gemini 3.8 Flash (chat)
+EMBEDDING MODEL  text-embedding-004 (768 dims, RAG)
+AUTH             JWT HS256, bcrypt, refresh token rotation
+FRONTEND URL     http://localhost:8443 (dev)
+BACKEND URL      http://localhost:3001 (dev)
+API PREFIX       /api/...
+
+SCREENS
+  Dashboard, AI Assistant, Human Escalation,
+  Knowledge Base, Query History, Escalations
+
+BACKEND ROUTES
+  /api/auth       Registration, login, refresh, logout, me
+  /api/users      User management (admin)
+  /api/tickets    Ticket CRUD, status, assign, audit
+  /api/tickets/:id/replies   Reply + internal note CRUD
+  /api/kb         Knowledge base CRUD + semantic search
+  /api/chat       AI response generation (RAG + Gemini)
+
+USER ROLES       customer < agent < admin
+
+RAG PIPELINE
+  User query
+  → embed with text-embedding-004 (768-dim)
+  → cosine similarity vs all KB article embeddings
+  → top-3 articles above 0.5 threshold
+  → inject into Gemini system prompt
+  → stream response via SSE
+  → return source citations to frontend
+
+RETRY LOGIC
+  3 retries with exponential backoff (800ms base)
+  on 503 Service Unavailable and 429 Rate Limited
+  errors from Google Gemini API
+
+DEPLOY
+  Backend  → Render Web Service + Persistent Disk
+  Frontend → Vercel Static + /api rewrite to Render

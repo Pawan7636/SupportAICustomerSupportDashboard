@@ -1,0 +1,219 @@
+================================================================
+  SUPPORTAI — AUTHENTICATION & SECURITY
+================================================================
+
+================================================================
+  AUTHENTICATION SYSTEM
+================================================================
+
+STRATEGY
+  JWT (JSON Web Token) dual-token strategy:
+  - Short-lived access token (15 minutes)
+  - Long-lived refresh token (7 days) with rotation
+
+  Library: jose (RFC-compliant, no legacy jsonwebtoken)
+  Algorithm: HS256 (HMAC-SHA256)
+  Two separate secrets: JWT_ACCESS_SECRET and JWT_REFRESH_SECRET
+
+ACCESS TOKEN
+  Lifetime:   15 minutes (configurable via JWT_ACCESS_EXPIRES_IN)
+  Payload:    { sub: userId, email, role, type: "access", iat, exp }
+  Usage:      Authorization: Bearer <token> on every protected request
+  Storage:    Client-side only (localStorage or memory) — never in DB
+
+REFRESH TOKEN
+  Lifetime:   7 days (configurable via JWT_REFRESH_EXPIRES_IN)
+  Payload:    { sub: userId, email, role, type: "refresh", iat, exp }
+  Rotation:   Every refresh call revokes the old token and issues a new pair
+  DB storage: SHA-256 hash only — raw token never persisted
+  Revocation: Marked revoked=1 in DB on use or logout
+
+TOKEN LIFECYCLE
+  1. Login/Register:
+     → signAccessToken({ sub, email, role })  — expires 15m
+     → signRefreshToken({ sub, email, role }) — expires 7d
+     → SHA-256 hash of refresh token stored in refresh_tokens table
+     → Both tokens returned to client
+
+  2. API request (authenticated):
+     → Client sends Authorization: Bearer <access_token>
+     → authenticate middleware calls verifyAccessToken(token)
+     → jose verifies signature + expiry
+     → payload.type must equal "access" (prevents using refresh as access)
+     → req.user = { id, email, role } attached to request
+
+  3. Token refresh:
+     → Client sends POST /api/auth/refresh { refresh_token }
+     → verifyRefreshToken() checks JWT signature + expiry
+     → DB lookup by SHA-256 hash — must exist, not revoked, not expired
+     → Old token marked revoked=1
+     → New access + refresh pair issued
+
+  4. Logout:
+     → Client sends POST /api/auth/logout { refresh_token }
+     → Token hash looked up and marked revoked=1
+     → Client should discard both tokens locally
+
+REPLAY ATTACK PREVENTION
+  If a compromised refresh token is replayed after it was rotated:
+  - The new hash won't match (new token was issued)
+  - If the old hash is somehow kept: revoked=1 returns 401 immediately
+
+================================================================
+  AUTHORISATION — ROLE-BASED ACCESS CONTROL
+================================================================
+
+THREE ROLES
+  customer   Self-registered users. Can only access their own data.
+  agent      Staff. Can manage all tickets and add internal notes.
+  admin      Full access. Can manage users, delete anything.
+
+MIDDLEWARE CHAIN
+  authenticate      — verifies JWT, attaches req.user
+  requireRoles(...) — checks req.user.role against allowed list
+
+Example:
+  router.patch("/:id/status",
+    authenticate,
+    requireRoles("agent", "admin"),
+    handler
+  )
+
+PERMISSION MATRIX
+
+  Endpoint                          customer  agent  admin
+  ───────────────────────────────────────────────────────
+  GET /api/tickets                  own only    ✓      ✓
+  POST /api/tickets                    ✓        ✓      ✓
+  GET /api/tickets/:id              own only    ✓      ✓
+  PATCH /api/tickets/:id            own only*   ✓      ✓
+  PATCH /api/tickets/:id/status        ✗        ✓      ✓
+  PATCH /api/tickets/:id/assign        ✗        ✓      ✓
+  DELETE /api/tickets/:id              ✗        ✗      ✓
+  GET /api/tickets/:id/audit           ✗        ✓      ✓
+  POST /api/tickets/:id/replies        ✓**       ✓      ✓
+  GET /api/tickets/:id/replies      pub only***  ✓      ✓
+  GET /api/users                       ✗        ✗      ✓
+  POST /api/users                      ✗        ✗      ✓
+  DELETE /api/users/:id                ✗        ✗      ✓
+  GET /api/kb                          ✓        ✓      ✓
+  POST /api/kb                         ✗        ✓      ✓
+  PATCH /api/kb/:id                    ✗        ✓      ✓
+  DELETE /api/kb/:id                   ✗        ✗      ✓
+
+  *  Customers cannot change priority
+  ** Customers cannot create internal notes (is_internal_note = true)
+  ** Customers cannot reply to closed tickets
+  *** Customers only see public replies (is_internal_note = false)
+
+INFORMATION LEAKAGE PREVENTION
+  Customers requesting another customer's ticket get 404 (not 403).
+  This prevents an attacker from enumerating which ticket IDs exist.
+
+================================================================
+  PASSWORD SECURITY
+================================================================
+
+Hashing:    bcrypt via bcryptjs library
+Cost factor: 10 (dev) — 12 (production recommended)
+             Each increment doubles the hash time:
+             cost 10 ≈ 100ms, cost 12 ≈ 400ms
+
+Storage:    password_hash column only — raw password never stored
+Validation: Zod schema enforces:
+            - Minimum 8 characters
+            - Maximum 128 characters
+            - At least one uppercase letter
+            - At least one lowercase letter
+            - At least one digit
+            - At least one special character
+
+TIMING ATTACK PREVENTION
+  Login always runs bcrypt.compare(), even if the user doesn't exist:
+
+  const dummyHash = "$2b$12$invalidhashpaddingtomatchcostfactor"
+  const match = await bcrypt.compare(password, user?.password_hash ?? dummyHash)
+
+  This ensures the response time is identical whether the email
+  exists or not, preventing user enumeration via timing.
+
+================================================================
+  TRANSPORT SECURITY
+================================================================
+
+helmet middleware sets these HTTP headers on every response:
+
+  Strict-Transport-Security  — forces HTTPS for 1 year
+  X-Content-Type-Options     — prevents MIME sniffing
+  X-Frame-Options            — prevents clickjacking
+  X-XSS-Protection           — legacy XSS filter
+  Content-Security-Policy    — restricts resource origins
+  Referrer-Policy            — controls referrer header
+
+TLS: Enforced by Render (backend) and Vercel (frontend) in production.
+
+================================================================
+  CORS CONFIGURATION
+================================================================
+
+Allowed origins:
+  - Explicitly listed in CORS_ORIGINS env var (comma-separated)
+  - Any localhost/127.0.0.1 origin in development (any port)
+  - Same-origin requests (no Origin header) always allowed
+
+Credentials: true (allows cookies and Authorization header)
+Methods: GET, POST, PATCH, DELETE, OPTIONS
+
+Production CORS_ORIGINS should contain ONLY your Vercel URL:
+  CORS_ORIGINS=https://your-app.vercel.app
+
+================================================================
+  RATE LIMITING
+================================================================
+
+Global limiter (all endpoints):
+  Window:   15 minutes
+  Max:      200 requests
+  Error:    { "success": false, "error": "Too many requests..." }
+
+Auth limiter (/api/auth/* only):
+  Window:   15 minutes
+  Max:      20 requests
+  Error:    { "success": false, "error": "Too many authentication attempts" }
+  Purpose:  Brute-force and credential stuffing protection
+
+Headers: standard X-RateLimit-* headers included in responses
+
+================================================================
+  REQUEST VALIDATION
+================================================================
+
+All request bodies validated with Zod schemas before handler runs:
+
+  validate({ body: ChatSchema })   — validates req.body
+  validate({ params: ... })        — validates req.params
+  validate({ query: ... })         — validates req.query
+
+On validation failure: 400 with details array:
+  { field: "email", message: "Invalid email" }
+
+Input limits:
+  express.json({ limit: "1mb" })  — max body size
+  String fields have .max() limits in Zod schemas
+
+================================================================
+  API KEY SECURITY
+================================================================
+
+GEMINI_API_KEY:
+  - Stored in server/.env (gitignored)
+  - Loaded via dotenv at startup
+  - Never exposed to the frontend
+  - Validated on first use: throws if missing or starts with "CHANGE_ME"
+  - All Gemini requests made server-side only
+
+JWT secrets:
+  - Must be at least 32 characters (enforced by getSecret())
+  - Generated with: node -e "require('crypto').randomBytes(64).toString('hex')"
+  - Different secrets for access vs refresh tokens
+  - Never committed to version control
